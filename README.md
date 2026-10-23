@@ -1,4 +1,16 @@
-# LCT Industrial Server
+# Waveshare ESP32-S3 Modbus Gateway
+
+Based on [LCT Industrial Server](https://github.com/logictechs/waveshare_lct_industrial_server)
+by logictechs. This fork targets the Waveshare ESP32-S3-POE-ETH-8DI-8DO.
+
+**Work in progress:** local DI/DO are available over Modbus TCP (FC01/FC02)
+alongside the upstream holding-register API. Modbus RTU polled values are **not
+yet mapped** into the TCP server. See
+[CCI Wally A+ Modbus commissioning](docs/modbus-cci.md) for the map, known
+limitations and test procedure. No hardware validation is claimed.
+
+## Original firmware documentation
+
 
 Arduino IDE firmware for the **Waveshare ESP32-S3-POE-ETH-8DI-8DO** industrial controller board.
 
