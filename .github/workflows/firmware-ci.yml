@@ -1,0 +1,52 @@
+name: Firmware CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  protocol-tests:
+    name: Modbus PDU unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test protocol handling against firmware source
+        run: python3 -m unittest discover -s tests -v
+
+  esp32s3-build:
+    name: Compile ESP32-S3 firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+      - name: Install pinned ESP32 core and libraries
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.12
+          arduino-cli lib install 'Ethernet@2.0.2' 'WebSockets@2.7.2' 'PubSubClient@2.8'
+      - name: Compile target firmware
+        run: |
+          # Arduino requires the directory name to match its primary .ino file.
+          mkdir -p "$RUNNER_TEMP/lct_industrial_server"
+          cp lct_industrial_server.ino "$RUNNER_TEMP/lct_industrial_server/"
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32s3 \
+            --warnings default \
+            --output-dir "$RUNNER_TEMP/firmware" \
+            "$RUNNER_TEMP/lct_industrial_server"
+          ls -lh "$RUNNER_TEMP/firmware"
+      - name: Archive unvalidated development firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-s3-development-firmware
+          path: ${{ runner.temp }}/firmware/*.bin
+          if-no-files-found: error
+          retention-days: 7
