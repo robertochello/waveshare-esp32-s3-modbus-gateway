@@ -38,7 +38,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/lct_industrial_server"
           cp lct_industrial_server.ino "$RUNNER_TEMP/lct_industrial_server/"
           arduino-cli compile \
-            --fqbn esp32:esp32:esp32s3 \
+            --fqbn esp32:esp32:esp32s3:FlashSize=16M,PartitionScheme=default_16MB,PSRAM=opi \
             --warnings default \
             --output-dir "$RUNNER_TEMP/firmware" \
             "$RUNNER_TEMP/lct_industrial_server"
