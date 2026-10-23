@@ -19,7 +19,7 @@ libraries, and the standard Waveshare N16R8 module settings:
 - Board: `esp32:esp32:esp32s3`
 - Flash: **16 MB**
 - PSRAM: **OPI / 8 MB**
-- Partition: `default_16MB` (two OTA app slots)
+- Partition: `app3M_fat9M_16MB` (two 3 MB OTA app slots)
 
 The compiled binaries are retained as **development artifacts** only.
 Passing CI checks source compilation and the software Modbus PDU tests; it
