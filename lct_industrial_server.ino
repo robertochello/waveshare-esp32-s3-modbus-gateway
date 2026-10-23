@@ -1609,6 +1609,26 @@ int buildModbusPDU(const uint8_t *req, int reqLen, uint8_t *resp) {
 
   uint8_t fc = req[0];
 
+  // Local digital I/O bitmaps: FC01 = outputs, FC02 = inputs.
+  // Bits are packed LSB-first, starting with the requested zero-based address.
+  if (fc == 1 || fc == 2) {
+    uint16_t start = ((uint16_t)req[1] << 8) | req[2];
+    uint16_t qty = ((uint16_t)req[3] << 8) | req[4];
+    if (qty < 1 || qty > 8 || start >= 8 || start + qty > 8) {
+      resp[0] = fc | 0x80;
+      resp[1] = 0x02; // Illegal data address
+      return 2;
+    }
+    resp[0] = fc;
+    resp[1] = 1; // Up to eight bits fit in one response byte.
+    resp[2] = 0;
+    for (uint16_t i = 0; i < qty; i++) {
+      bool state = (fc == 2) ? inState[start + i] : outState[start + i];
+      if (state) resp[2] |= (uint8_t)(1U << i);
+    }
+    return 3;
+  }
+
   if (fc == 3 || fc == 4) {
     if (reqLen < 5) return 0;
     uint16_t start = ((uint16_t)req[1] << 8) | req[2];
@@ -1676,55 +1696,87 @@ int buildModbusPDU(const uint8_t *req, int reqLen, uint8_t *resp) {
 void handleModbusTcpServer() {
   if (!ethernetStarted || !ethModbusServerEnable) return;
 
-  EthernetClient newClient = modbusTcpServer.available();
+  // EthernetServer::accept() hands the socket to us once. Calling available()
+  // on each loop could return the active CCI socket again and close it.
+  // Keep one persistent Modbus TCP client, including across repeated polls.
+  static uint8_t frame[260];
+  static uint16_t frameLen = 0;
+  static uint16_t expectedLen = 0;
+  static unsigned long frameStarted = 0;
+  const uint32_t PARTIAL_FRAME_TIMEOUT_MS = 1000UL;
+
+  EthernetClient newClient = modbusTcpServer.accept();
   if (newClient) {
     if (!modbusTcpClient || !modbusTcpClient.connected()) {
+      if (modbusTcpClient) modbusTcpClient.stop();
       modbusTcpClient = newClient;
+      frameLen = 0;
+      expectedLen = 0;
     } else {
+      // Only one Modbus client at a time; do not disturb an active session.
       newClient.stop();
     }
   }
 
-  if (!modbusTcpClient || !modbusTcpClient.connected()) return;
-  if (modbusTcpClient.available() < 8) return;
-
-  uint8_t header[7];
-  modbusTcpClient.read(header, 7);
-  uint16_t trans = ((uint16_t)header[0] << 8) | header[1];
-  uint16_t proto = ((uint16_t)header[2] << 8) | header[3];
-  uint16_t len = ((uint16_t)header[4] << 8) | header[5];
-  uint8_t unit = header[6];
-
-  if (proto != 0 || len < 2 || len > 253) {
-    modbusTcpClient.stop();
+  if (!modbusTcpClient || !modbusTcpClient.connected()) {
+    if (modbusTcpClient) modbusTcpClient.stop();
+    frameLen = 0;
+    expectedLen = 0;
     return;
   }
 
-  int pduLen = len - 1;
-  uint8_t pdu[253];
-  int got = 0;
-  unsigned long start = millis();
-  while (got < pduLen && millis() - start < 500) {
-    if (modbusTcpClient.available()) pdu[got++] = modbusTcpClient.read();
+  // Modbus TCP has a seven-byte MBAP header. A TCP read can return only
+  // part of that header (or PDU), so accumulate exactly one complete ADU.
+  while (frameLen < 7 && modbusTcpClient.available() > 0) {
+    if (frameLen == 0) frameStarted = millis();
+    frame[frameLen++] = (uint8_t)modbusTcpClient.read();
   }
-  if (got != pduLen) return;
 
+  if (frameLen == 7 && expectedLen == 0) {
+    uint16_t protocol = ((uint16_t)frame[2] << 8) | frame[3];
+    uint16_t mbapLength = ((uint16_t)frame[4] << 8) | frame[5];
+    if (protocol != 0 || mbapLength < 2 || mbapLength > 254) {
+      modbusTcpClient.stop();
+      frameLen = 0;
+      expectedLen = 0;
+      return;
+    }
+    expectedLen = 6 + mbapLength; // MBAP length includes Unit ID and PDU.
+  }
+
+  while (expectedLen > 0 && frameLen < expectedLen && modbusTcpClient.available() > 0) {
+    frame[frameLen++] = (uint8_t)modbusTcpClient.read();
+  }
+
+  if (expectedLen == 0 || frameLen < expectedLen) {
+    if (frameLen > 0 && millis() - frameStarted > PARTIAL_FRAME_TIMEOUT_MS) {
+      modbusTcpClient.stop();
+      frameLen = 0;
+      expectedLen = 0;
+    }
+    return;
+  }
+
+  // Preserve the request's Transaction ID and Unit ID in the response.
+  uint16_t pduLen = expectedLen - 7;
   refreshInputsOutputs();
+  uint8_t responsePdu[253];
+  int responseLen = buildModbusPDU(frame + 7, pduLen, responsePdu);
+  if (responseLen > 0) {
+    uint8_t response[260];
+    memcpy(response, frame, 2);
+    response[2] = 0;
+    response[3] = 0;
+    response[4] = (uint8_t)((responseLen + 1) >> 8);
+    response[5] = (uint8_t)((responseLen + 1) & 0xFF);
+    response[6] = frame[6];
+    memcpy(response + 7, responsePdu, responseLen);
+    modbusTcpClient.write(response, responseLen + 7);
+  }
 
-  uint8_t respPdu[253];
-  int respLen = buildModbusPDU(pdu, pduLen, respPdu);
-  if (respLen <= 0) return;
-
-  uint8_t out[260];
-  out[0] = trans >> 8;
-  out[1] = trans & 0xFF;
-  out[2] = 0;
-  out[3] = 0;
-  out[4] = ((respLen + 1) >> 8) & 0xFF;
-  out[5] = (respLen + 1) & 0xFF;
-  out[6] = unit;
-  memcpy(out + 7, respPdu, respLen);
-  modbusTcpClient.write(out, respLen + 7);
+  // Leave any subsequent TCP data in the socket until the next loop().
+  frameLen = 0;
+  expectedLen = 0;
 }
 
 // ---------------- Modbus RTU Slave ----------------
